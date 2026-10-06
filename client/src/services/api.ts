@@ -1,7 +1,25 @@
 import axios from 'axios';
 
+// Ensure same-origin '/api' is used in browser environments to prevent mixed-content and unreachable localhost:5000 errors
+const getBaseUrl = (): string => {
+  const envUrl = import.meta.env.VITE_API_BASE_URL;
+  if (!envUrl) return '/api';
+  if (envUrl.startsWith('/')) return envUrl;
+  if (typeof window !== 'undefined') {
+    // If the browser is accessing via Cloud Run, remote domain, or if env points to 5000, force relative '/api'
+    if (
+      envUrl.includes('localhost:5000') ||
+      envUrl.includes('127.0.0.1:5000') ||
+      !window.location.hostname.includes('localhost')
+    ) {
+      return '/api';
+    }
+  }
+  return envUrl;
+};
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
+  baseURL: getBaseUrl(),
   headers: {
     'Content-Type': 'application/json',
   },

@@ -32,7 +32,11 @@ export const RegisterPage: React.FC = () => {
 
     setIsLoading(true);
     try {
-      const res = await authService.register({ name, email, password });
+      const res = await authService.register({
+        name: name.trim(),
+        email: email.trim(),
+        password: password.trim(),
+      });
       if (res.data.success) {
         login(res.data.data.token, res.data.data.user);
         navigate('/dashboard');

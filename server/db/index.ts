@@ -17,6 +17,10 @@ interface DbClient {
   type: 'postgres' | 'pglite';
 }
 
+declare global {
+  var _postgresPool: pg.Pool | undefined;
+}
+
 let dbInstance: DbClient | null = null;
 
 export async function getDb(): Promise<DbClient> {
@@ -24,72 +28,134 @@ export async function getDb(): Promise<DbClient> {
     return dbInstance;
   }
 
+  // 1. Cloud SQL Managed PostgreSQL (Object Method)
+  if (
+    process.env.SQL_HOST &&
+    process.env.SQL_USER &&
+    process.env.SQL_PASSWORD &&
+    process.env.SQL_DB_NAME
+  ) {
+    console.log('[Database] Connecting to managed Cloud SQL instance via Object Method...');
+    try {
+      if (!global._postgresPool) {
+        global._postgresPool = new Pool({
+          host: process.env.SQL_HOST,
+          user: process.env.SQL_USER,
+          password: process.env.SQL_PASSWORD,
+          database: process.env.SQL_DB_NAME,
+          max: 10,
+          connectionTimeoutMillis: 15000,
+        });
+
+        global._postgresPool.on('error', (err) => {
+          console.error('Unexpected error on idle SQL pool client:', err);
+        });
+      }
+
+      dbInstance = {
+        type: 'postgres',
+        query: async <T = any>(text: string, params?: any[]) => {
+          const res = await global._postgresPool!.query(text, params);
+          return {
+            rows: res.rows as T[],
+            rowCount: res.rowCount ?? res.rows.length,
+          };
+        },
+        exec: async (sql: string) => {
+          await global._postgresPool!.query(sql);
+        },
+        close: async () => {
+          if (global._postgresPool) {
+            await global._postgresPool.end();
+            global._postgresPool = undefined;
+          }
+        },
+      };
+      return dbInstance;
+    } catch (err: any) {
+      console.warn(`[Database] Notice: Cloud SQL connection failed (${err.message}). Falling back...`);
+    }
+  }
+
   const databaseUrl = process.env.DATABASE_URL;
 
   if (databaseUrl && databaseUrl.trim().length > 0) {
-    console.log('[Database] Connecting to PostgreSQL via DATABASE_URL...');
-    const pool = new Pool({
-      connectionString: databaseUrl,
-      ssl: databaseUrl.includes('localhost') ? false : { rejectUnauthorized: false },
-    });
-
-    // Test connection
-    const client = await pool.connect();
-    client.release();
-    console.log('[Database] Connected to PostgreSQL successfully.');
-
-    dbInstance = {
-      type: 'postgres',
-      query: async <T = any>(text: string, params?: any[]) => {
-        const res = await pool.query(text, params);
-        return {
-          rows: res.rows as T[],
-          rowCount: res.rowCount ?? res.rows.length,
-        };
-      },
-      exec: async (sql: string) => {
-        await pool.query(sql);
-      },
-      close: async () => {
-        await pool.end();
-      },
-    };
-  } else {
-    console.log('[Database] DATABASE_URL not set. Initializing embedded PostgreSQL engine (PGlite)...');
-    const dataDir = path.resolve(process.cwd(), 'data/pgdata');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-
-    let pglite: PGlite;
+    console.log('[Database] Attempting connection to PostgreSQL via DATABASE_URL...');
     try {
-      pglite = new PGlite(dataDir);
-      await pglite.waitReady;
-      console.log('[Database] Embedded PostgreSQL (PGlite) ready at:', dataDir);
-    } catch (e: any) {
-      console.warn('[Database] Notice: pgdata filesystem locked or busy, falling back to clean memory-mapped PostgreSQL engine.');
-      pglite = new PGlite();
-      await pglite.waitReady;
-      console.log('[Database] Memory-mapped PostgreSQL engine ready.');
-    }
+      const pool = new Pool({
+        connectionString: databaseUrl,
+        ssl:
+          databaseUrl.includes('localhost') || databaseUrl.includes('127.0.0.1')
+            ? false
+            : { rejectUnauthorized: false },
+        connectionTimeoutMillis: 3000,
+      });
 
-    dbInstance = {
-      type: 'pglite',
-      query: async <T = any>(text: string, params?: any[]) => {
-        const res = await pglite.query<T>(text, params);
-        return {
-          rows: (res.rows || []) as T[],
-          rowCount: res.rows ? res.rows.length : 0,
-        };
-      },
-      exec: async (sql: string) => {
-        await pglite.exec(sql);
-      },
-      close: async () => {
-        await pglite.close();
-      },
-    };
+      // Test connection with timeout
+      const client = await pool.connect();
+      client.release();
+      console.log('[Database] Connected to external PostgreSQL successfully.');
+
+      dbInstance = {
+        type: 'postgres',
+        query: async <T = any>(text: string, params?: any[]) => {
+          const res = await pool.query(text, params);
+          return {
+            rows: res.rows as T[],
+            rowCount: res.rowCount ?? res.rows.length,
+          };
+        },
+        exec: async (sql: string) => {
+          await pool.query(sql);
+        },
+        close: async () => {
+          await pool.end();
+        },
+      };
+      return dbInstance;
+    } catch (err: any) {
+      console.warn(
+        `[Database] Notice: External PostgreSQL connection to DATABASE_URL failed (${err.message}). Falling back to embedded PostgreSQL engine (PGlite)...`
+      );
+    }
   }
+
+  console.log('[Database] Initializing embedded PostgreSQL engine (PGlite)...');
+  const dataDir = path.resolve(process.cwd(), 'data/pgdata');
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  let pglite: PGlite;
+  try {
+    pglite = new PGlite(dataDir);
+    await pglite.waitReady;
+    console.log('[Database] Embedded PostgreSQL (PGlite) ready at:', dataDir);
+  } catch (e: any) {
+    console.warn(
+      '[Database] Notice: pgdata filesystem locked or busy, falling back to clean memory-mapped PostgreSQL engine.'
+    );
+    pglite = new PGlite();
+    await pglite.waitReady;
+    console.log('[Database] Memory-mapped PostgreSQL engine ready.');
+  }
+
+  dbInstance = {
+    type: 'pglite',
+    query: async <T = any>(text: string, params?: any[]) => {
+      const res = await pglite.query<T>(text, params);
+      return {
+        rows: (res.rows || []) as T[],
+        rowCount: res.rows ? res.rows.length : 0,
+      };
+    },
+    exec: async (sql: string) => {
+      await pglite.exec(sql);
+    },
+    close: async () => {
+      await pglite.close();
+    },
+  };
 
   return dbInstance;
 }
@@ -231,6 +297,22 @@ export async function initDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_interventions_teacher ON interventions(teacher_id);
   `;
 
-  await db.exec(schemaSql);
-  console.log('[Database] Schema initialized successfully.');
+  if (process.env.SQL_HOST) {
+    console.log('[Database] Cloud SQL schema managed via Drizzle Kit.');
+  } else {
+    await db.exec(schemaSql);
+    console.log('[Database] Schema initialized successfully.');
+  }
+
+  // Auto-seed if database is empty (ensures teacher@classpulse.edu and sample classes are ready)
+  try {
+    const userCheck = await db.query('SELECT id FROM users LIMIT 1');
+    if (userCheck.rows.length === 0) {
+      console.log('[Database] No teacher records found. Auto-seeding initial demo data...');
+      const { runSeed } = await import('../seed.ts');
+      await runSeed();
+    }
+  } catch (seedErr: any) {
+    console.warn('[Database] Auto-seed check notice:', seedErr?.message || seedErr);
+  }
 }
