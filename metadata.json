@@ -1,0 +1,6 @@
+{
+  "name": "ClassPulse AI",
+  "description": "Turn student performance data into early, actionable support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
