@@ -205,12 +205,24 @@ export async function loginWithGoogle(req: AuthenticatedRequest, res: Response):
   if (!user) {
     const userId = generateId();
     const passwordHash = await bcrypt.hash(crypto.randomUUID(), 10);
-    await query(
-      `INSERT INTO users (id, name, email, password_hash, role, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'TEACHER', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-      [userId, name.trim(), email, passwordHash]
-    );
-    user = { id: userId, name: name.trim(), email, role: 'TEACHER' };
+    try {
+      await query(
+        `INSERT INTO users (id, name, email, password_hash, role, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'TEACHER', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [userId, name.trim(), email, passwordHash]
+      );
+      user = { id: userId, name: name.trim(), email, role: 'TEACHER' };
+    } catch (insertError: any) {
+      if (insertError?.code !== '23505' && insertError?.code !== 'SQLITE_CONSTRAINT_UNIQUE') {
+        throw insertError;
+      }
+
+      const existingAfterInsert = await query(
+        'SELECT id, name, email, role FROM users WHERE LOWER(email) = $1',
+        [email]
+      );
+      user = existingAfterInsert.rows[0];
+    }
   }
 
   const token = generateToken({
