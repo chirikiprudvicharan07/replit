@@ -52,11 +52,25 @@ export async function register(req: AuthenticatedRequest, res: Response): Promis
   const passwordHash = await bcrypt.hash(password, 10);
   const userId = generateId();
 
-  await query(
-    `INSERT INTO users (id, name, email, password_hash, role, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, 'TEACHER', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-    [userId, name.trim(), normalizedEmail, passwordHash]
-  );
+  try {
+    await query(
+      `INSERT INTO users (id, name, email, password_hash, role, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'TEACHER', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [userId, name.trim(), normalizedEmail, passwordHash]
+    );
+  } catch (error: any) {
+    if (error?.code === '23505' || error?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      res.status(409).json({
+        success: false,
+        error: {
+          code: 'EMAIL_ALREADY_EXISTS',
+          message: 'An account with this email address already exists',
+        },
+      });
+      return;
+    }
+    throw error;
+  }
 
   const token = generateToken({
     userId,

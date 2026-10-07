@@ -45,7 +45,11 @@ export const RegisterPage: React.FC = () => {
       }
     } catch (err: any) {
       setError(
-        err.response?.data?.error?.message || err.response?.data?.message || 'Could not register user'
+        err.response?.data?.error?.message ||
+          err.response?.data?.message ||
+          (err.request
+            ? 'The registration service is unavailable. Please check that the server is running and try again.'
+            : 'Registration failed. Please check your details and try again.')
       );
     } finally {
       setIsLoading(false);
