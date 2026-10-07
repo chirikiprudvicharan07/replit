@@ -26,48 +26,73 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
+    let isMounted = true;
+    let processedAccessToken: string | null = null;
+
     const restoreApiSession = () => {
       authService
         .getMe()
         .then((res) => {
-          if (res.data?.data?.user) setUser(res.data.data.user);
+          if (isMounted && res.data?.data?.user) setUser(res.data.data.user);
         })
         .catch(() => {
-          setUser(null);
-          setToken(null);
+          if (isMounted) {
+            setUser(null);
+            setToken(null);
+          }
         })
-        .finally(() => setLoading(false));
+        .finally(() => {
+          if (isMounted) setLoading(false);
+        });
+    };
+
+    const exchangeSupabaseSession = async (session: { access_token: string } | null) => {
+      if (!session?.access_token || session.access_token === processedAccessToken) return;
+      processedAccessToken = session.access_token;
+
+      try {
+        const response = await authService.loginWithGoogle(session.access_token);
+        if (isMounted && response.data?.data) {
+          login(response.data.data.token, response.data.data.user);
+        }
+      } catch {
+        processedAccessToken = null;
+        if (isMounted) {
+          await supabase?.auth.signOut();
+          restoreApiSession();
+        }
+      } finally {
+        if (isMounted) setLoading(false);
+      }
     };
 
     const supabaseClient = supabase;
     if (supabaseClient) {
-      const { data: listener } = supabaseClient.auth.onAuthStateChange(async (_event, session) => {
-        if (!session?.access_token) {
-          return;
-        }
-        try {
-          const response = await authService.loginWithGoogle(session.access_token);
-          if (response.data?.data) {
-            login(response.data.data.token, response.data.data.user);
-          }
-        } catch {
-          await supabaseClient.auth.signOut();
-          restoreApiSession();
-        } finally {
-          setLoading(false);
-        }
+      const { data: listener } = supabaseClient.auth.onAuthStateChange((_event, session) => {
+        // Defer the API exchange so Supabase can finish its own session transaction.
+        window.setTimeout(() => {
+          void exchangeSupabaseSession(session);
+        }, 0);
       });
 
       void supabaseClient.auth.getSession().then(({ data }) => {
-        if (!data.session) {
+        if (data.session) {
+          void exchangeSupabaseSession(data.session);
+        } else {
           restoreApiSession();
         }
       });
 
-      return () => listener.subscription.unsubscribe();
+      return () => {
+        isMounted = false;
+        listener.subscription.unsubscribe();
+      };
     }
 
     restoreApiSession();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const login = (newToken: string, newUser: User) => {
